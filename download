@@ -1,0 +1,50 @@
+"""
+Feature engineering for fraud detection.
+
+Design note: raw transaction fields are weak signals. Fraud behavioral signatures
+emerge in *combinations* — high amount + late night + new account + velocity burst
+is the pattern, not any single field in isolation.
+"""
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import LabelEncoder
+
+NUMERIC = [
+    "amount", "hour_of_day", "day_of_week",
+    "is_foreign", "txn_count_1h", "txn_count_24h", "account_age_days",
+]
+CATEGORICAL = ["merchant_category"]
+
+
+def build_features(df: pd.DataFrame, encoder: LabelEncoder = None, fit: bool = True):
+    df = df.copy()
+
+    # log-transform amount — reduces skew from high-value outliers
+    df["log_amount"] = np.log1p(df["amount"])
+
+    # behavioral pattern features
+    df["is_late_night"]   = df["hour_of_day"].isin([0, 1, 2, 3, 23]).astype(int)
+    df["is_weekend"]      = df["day_of_week"].isin([5, 6]).astype(int)
+    df["is_new_account"]  = (df["account_age_days"] < 60).astype(int)
+    df["velocity_ratio"]  = df["txn_count_1h"] / (df["txn_count_24h"] + 1)  # burst detection
+    df["high_amount"]     = (df["amount"] > df["amount"].quantile(0.95)).astype(int)
+
+    # fraud signature: high amount + foreign + new account
+    df["risk_combo"] = (
+        df["high_amount"] & df["is_foreign"].astype(bool) & df["is_new_account"].astype(bool)
+    ).astype(int)
+
+    # encode merchant category
+    if encoder is None:
+        encoder = LabelEncoder()
+    if fit:
+        df["merchant_cat_enc"] = encoder.fit_transform(df["merchant_category"].astype(str))
+    else:
+        df["merchant_cat_enc"] = encoder.transform(df["merchant_category"].astype(str))
+
+    feature_cols = NUMERIC + [
+        "log_amount", "is_late_night", "is_weekend", "is_new_account",
+        "velocity_ratio", "high_amount", "risk_combo", "merchant_cat_enc",
+    ]
+    available = [c for c in feature_cols if c in df.columns]
+    return df[available], encoder
